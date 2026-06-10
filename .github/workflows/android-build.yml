@@ -65,18 +65,17 @@ jobs:
 
       - name: Download Node.js binaries for Android
         run: |
-          echo "Creating placeholder Node.js binaries..."
-          mkdir -p android/app/src/main/assets/nodejs
+          echo "Downloading nodejs-mobile prebuilt binaries..."
+          mkdir -p android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
 
-          # Create placeholder binaries (will be replaced with actual binaries later)
-          echo "#!/bin/sh" > android/app/src/main/assets/nodejs/node-arm64
-          echo "#!/bin/sh" > android/app/src/main/assets/nodejs/node-armv7
-          echo "#!/bin/sh" > android/app/src/main/assets/nodejs/node-x64
+          wget -q https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v18.20.4/nodejs-mobile-v18.20.4-android.zip -O /tmp/nodejs-mobile.zip
+          unzip -q /tmp/nodejs-mobile.zip -d /tmp/nodejs-mobile
 
-          chmod +x android/app/src/main/assets/nodejs/*
-          ls -lh android/app/src/main/assets/nodejs/
+          cp /tmp/nodejs-mobile/bin/arm64-v8a/libnode.so android/app/src/main/jniLibs/arm64-v8a/
+          cp /tmp/nodejs-mobile/bin/armeabi-v7a/libnode.so android/app/src/main/jniLibs/armeabi-v7a/
+          cp /tmp/nodejs-mobile/bin/x86_64/libnode.so android/app/src/main/jniLibs/x86_64/
 
-          echo "Note: Using placeholder binaries for initial build test"
+          ls -lh android/app/src/main/jniLibs/*/
 
       - name: Bundle backend for mobile
         run: |
