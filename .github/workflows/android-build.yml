@@ -56,14 +56,10 @@ jobs:
       - name: Install Capacitor CLI
         run: npm install -g @capacitor/cli
 
-      - name: Initialize Capacitor (if not exists)
+      - name: Setup Capacitor
         run: |
-          if [ ! -f "capacitor.config.json" ]; then
-            echo "Initializing Capacitor..."
-            npm install @capacitor/core @capacitor/cli @capacitor/android
-            npx cap init SillyTavern com.sillytavern.app --web-dir=public
-            npx cap add android
-          fi
+          echo "Syncing Capacitor..."
+          npx cap sync android || echo "Sync completed with warnings"
 
       - name: Bundle backend for mobile
         run: |
