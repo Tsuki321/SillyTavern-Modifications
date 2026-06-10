@@ -20,6 +20,8 @@ on:
         options:
           - 'true'
           - 'false'
+
+      bundle_models:
         description: 'Bundle ML models in APK'
         required: false
         default: 'false'
