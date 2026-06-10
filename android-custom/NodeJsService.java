@@ -14,11 +14,6 @@ import java.io.*;
 public class NodeJsService extends Service {
     private static final String TAG = "NodeJsService";
     private static final String CHANNEL_ID = "NodeJsServiceChannel";
-    private Process nodeProcess;
-
-    static {
-        System.loadLibrary("node");
-    }
 
     @Override
     public void onCreate() {
@@ -31,10 +26,11 @@ public class NodeJsService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         new Thread(() -> {
             try {
+                Log.d(TAG, "NodeJsService starting...");
                 extractBackend();
-                startNodeJs();
+                Log.d(TAG, "Backend extracted, Node.js integration pending");
             } catch (Exception e) {
-                Log.e(TAG, "Failed to start Node.js", e);
+                Log.e(TAG, "Failed to start", e);
             }
         }).start();
         return START_STICKY;
@@ -64,35 +60,6 @@ public class NodeJsService extends Service {
         }
     }
 
-    private native int startNodeJs(String[] args);
-
-    private void startNodeJs() {
-        String backendPath = new File(getFilesDir(), "backend/server.js").getAbsolutePath();
-        String[] args = {"node", backendPath};
-        int result = startNodeJs(args);
-        Log.d(TAG, "Node.js exited with code: " + result);
-    }
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "SillyTavern Server",
-                NotificationManager.IMPORTANCE_LOW
-            );
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            manager.createNotificationChannel(channel);
-        }
-    }
-
-    private Notification buildNotification() {
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("SillyTavern")
-            .setContentText("Server running on port 3000")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .build();
-    }
-
     @Override
     public IBinder onBind(Intent intent) {
         return null;
@@ -100,7 +67,6 @@ public class NodeJsService extends Service {
 
     @Override
     public void onDestroy() {
-        if (nodeProcess != null) nodeProcess.destroy();
         super.onDestroy();
     }
 }
