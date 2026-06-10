@@ -59,7 +59,9 @@ jobs:
       - name: Setup Capacitor
         run: |
           echo "Syncing Capacitor..."
-          npx cap sync android || echo "Sync completed with warnings"
+          rm -rf android
+          npx cap add android
+          npx cap sync android
 
       - name: Download Node.js binaries for Android
         run: |
@@ -147,7 +149,6 @@ jobs:
         if: inputs.build_type == 'debug'
         run: |
           cd android
-          chmod +x gradlew
           ./gradlew assembleDebug --stacktrace
 
       - name: Build APK (Release)
