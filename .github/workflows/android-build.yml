@@ -12,7 +12,14 @@ on:
           - debug
           - release
 
-      bundle_models:
+      run_emulator_tests:
+        description: 'Run emulator tests'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
         description: 'Bundle ML models in APK'
         required: false
         default: 'false'
@@ -180,6 +187,21 @@ jobs:
         run: |
           cd android
           ./gradlew test --stacktrace || echo "Tests completed with warnings"
+
+      - name: Run emulator tests
+        if: inputs.run_emulator_tests == 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: google_apis
+          script: |
+            adb install android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell am start -n com.sillytavern.app/.MainActivity
+            sleep 15
+            adb logcat -d | grep -E "(SillyTavern|NodeJs)" > emulator.log || true
+            adb shell "curl -s http://localhost:3000/ || echo 'Server not responding'"
+            cat emulator.log
 
       - name: Upload Debug APK
         if: inputs.build_type == 'debug'
