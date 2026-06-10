@@ -44,30 +44,54 @@ public class NodeJsService extends Service {
     private void startNodeJs() {
         try {
             File filesDir = getFilesDir();
-            File nodeBinary = new File(filesDir, "node");
-            File serverJs = new File(filesDir, "server.js");
+            File backendDir = new File(filesDir, "backend");
 
-            // Extract node binary if needed
+            // Extract backend files on first run
+            if (!backendDir.exists()) {
+                extractBackendFiles();
+            }
+
+            // Determine architecture and select appropriate Node binary
+            String abi = Build.SUPPORTED_ABIS[0];
+            String nodeBinaryName;
+
+            if (abi.contains("arm64")) {
+                nodeBinaryName = "node-arm64";
+            } else if (abi.contains("armeabi")) {
+                nodeBinaryName = "node-armv7";
+            } else if (abi.contains("x86_64")) {
+                nodeBinaryName = "node-x64";
+            } else {
+                throw new RuntimeException("Unsupported architecture: " + abi);
+            }
+
+            // Extract node binary
+            File nodeBinary = new File(filesDir, "node");
             if (!nodeBinary.exists()) {
-                extractAsset("node", nodeBinary);
+                extractAsset("nodejs/" + nodeBinaryName, nodeBinary);
                 nodeBinary.setExecutable(true);
             }
 
-            // Extract backend files if needed
+            File serverJs = new File(backendDir, "server.js");
             if (!serverJs.exists()) {
-                extractBackendFiles();
+                throw new RuntimeException("Backend files not extracted");
             }
 
             // Start Node.js process
             ProcessBuilder pb = new ProcessBuilder(
                 nodeBinary.getAbsolutePath(),
-                serverJs.getAbsolutePath()
+                serverJs.getAbsolutePath(),
+                "--disableCsrf"
             );
-            pb.directory(filesDir);
+            pb.directory(backendDir);
             pb.redirectErrorStream(true);
 
+            // Set environment
+            pb.environment().put("NODE_ENV", "production");
+            pb.environment().put("PORT", "3000");
+
             nodeProcess = pb.start();
-            Log.i(TAG, "Node.js process started");
+            Log.i(TAG, "Node.js process started on " + abi);
 
             // Monitor process output
             new Thread(() -> {
@@ -102,8 +126,41 @@ public class NodeJsService extends Service {
     }
 
     private void extractBackendFiles() {
-        // TODO: Extract src/, server.js, and node_modules from assets
-        Log.i(TAG, "Extracting backend files...");
+        try {
+            Log.i(TAG, "Extracting backend files...");
+            File filesDir = getFilesDir();
+            File backendDir = new File(filesDir, "backend");
+            backendDir.mkdirs();
+
+            // Extract backend assets directory
+            copyAssetFolder("backend", backendDir.getAbsolutePath());
+
+            Log.i(TAG, "Backend files extracted successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to extract backend files", e);
+        }
+    }
+
+    private void copyAssetFolder(String srcFolder, String destFolder) throws IOException {
+        String[] files = getAssets().list(srcFolder);
+        if (files == null || files.length == 0) return;
+
+        File destDir = new File(destFolder);
+        destDir.mkdirs();
+
+        for (String file : files) {
+            String srcPath = srcFolder + "/" + file;
+            String destPath = destFolder + "/" + file;
+
+            String[] subFiles = getAssets().list(srcPath);
+            if (subFiles != null && subFiles.length > 0) {
+                // It's a directory
+                copyAssetFolder(srcPath, destPath);
+            } else {
+                // It's a file
+                extractAsset(srcPath, new File(destPath));
+            }
+        }
     }
 
     @Override

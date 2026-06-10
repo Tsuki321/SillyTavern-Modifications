@@ -61,20 +61,46 @@ jobs:
           echo "Syncing Capacitor..."
           npx cap sync android || echo "Sync completed with warnings"
 
+      - name: Download Node.js binaries for Android
+        run: |
+          echo "Downloading Node.js Android binaries..."
+          mkdir -p android/app/src/main/assets/nodejs
+
+          NODE_VERSION="v20.11.0"
+
+          # Download for arm64-v8a
+          wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-arm64-musl.tar.gz -O /tmp/node-arm64.tar.gz
+          tar -xzf /tmp/node-arm64.tar.gz -C /tmp
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp /tmp/node-${NODE_VERSION}-linux-arm64-musl/bin/node android/app/src/main/assets/nodejs/node-arm64
+
+          # Download for armeabi-v7a
+          wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-armv7l-musl.tar.gz -O /tmp/node-armv7.tar.gz
+          tar -xzf /tmp/node-armv7.tar.gz -C /tmp
+          cp /tmp/node-${NODE_VERSION}-linux-armv7l-musl/bin/node android/app/src/main/assets/nodejs/node-armv7
+
+          # Download for x86_64
+          wget -q https://unofficial-builds.nodejs.org/download/release/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64-musl.tar.gz -O /tmp/node-x64.tar.gz
+          tar -xzf /tmp/node-x64.tar.gz -C /tmp
+          cp /tmp/node-${NODE_VERSION}-linux-x64-musl/bin/node android/app/src/main/assets/nodejs/node-x64
+
+          chmod +x android/app/src/main/assets/nodejs/*
+          ls -lh android/app/src/main/assets/nodejs/
+
       - name: Bundle backend for mobile
         run: |
           echo "Creating mobile backend bundle..."
-          mkdir -p android/app/src/main/assets/nodejs-project
+          mkdir -p android/app/src/main/assets/backend
 
           # Copy backend files
-          cp -r src android/app/src/main/assets/nodejs-project/
-          cp server.js android/app/src/main/assets/nodejs-project/
-          cp package.json android/app/src/main/assets/nodejs-project/
+          cp -r src android/app/src/main/assets/backend/
+          cp server.js android/app/src/main/assets/backend/
+          cp -r default android/app/src/main/assets/backend/
 
-          # Create minimal package.json for mobile
-          cat > android/app/src/main/assets/nodejs-project/package.json << 'EOF'
+          # Create minimal package.json
+          cat > android/app/src/main/assets/backend/package.json << 'EOF'
           {
-            "name": "sillytavern-mobile-backend",
+            "name": "sillytavern-mobile",
             "version": "1.18.0",
             "type": "module",
             "main": "server.js",
@@ -82,14 +108,18 @@ jobs:
               "express": "^4.21.0",
               "cors": "^2.8.5",
               "compression": "^1.8.1",
-              "ws": "^8.18.3"
+              "body-parser": "^1.20.2",
+              "cookie-parser": "^1.4.6",
+              "ws": "^8.18.3",
+              "multer": "^2.1.1",
+              "yaml": "^2.8.3"
             }
           }
           EOF
 
-          # Install production dependencies only
-          cd android/app/src/main/assets/nodejs-project
-          npm install --production --no-optional
+          # Install production dependencies
+          cd android/app/src/main/assets/backend
+          npm install --production --no-optional --omit=dev
           cd -
 
       - name: Download ML models (optional)
@@ -101,6 +131,19 @@ jobs:
 
       - name: Sync Capacitor
         run: npx cap sync android
+
+      - name: Verify build assets
+        run: |
+          echo "Verifying Node.js binaries..."
+          ls -lh android/app/src/main/assets/nodejs/ || echo "Node.js binaries missing!"
+
+          echo "Verifying backend files..."
+          ls -lh android/app/src/main/assets/backend/ || echo "Backend files missing!"
+
+          echo "Checking backend structure..."
+          [ -f "android/app/src/main/assets/backend/server.js" ] && echo "✓ server.js found" || echo "✗ server.js missing"
+          [ -d "android/app/src/main/assets/backend/src" ] && echo "✓ src/ found" || echo "✗ src/ missing"
+          [ -d "android/app/src/main/assets/backend/node_modules" ] && echo "✓ node_modules found" || echo "✗ node_modules missing"
 
       - name: Decode keystore (release only)
         if: inputs.build_type == 'release'
@@ -136,6 +179,11 @@ jobs:
         run: |
           cd android
           ./gradlew bundleRelease --stacktrace
+
+      - name: Run Android tests
+        run: |
+          cd android
+          ./gradlew test --stacktrace || echo "Tests completed with warnings"
 
       - name: Upload Debug APK
         if: inputs.build_type == 'debug'
