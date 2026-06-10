@@ -1,0 +1,206 @@
+name: Android Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type (debug/release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+      bundle_models:
+        description: 'Bundle ML models in APK'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          build-tools: '34.0.0'
+
+      - name: Install Capacitor CLI
+        run: npm install -g @capacitor/cli
+
+      - name: Initialize Capacitor (if not exists)
+        run: |
+          if [ ! -f "capacitor.config.json" ]; then
+            echo "Initializing Capacitor..."
+            npm install @capacitor/core @capacitor/cli @capacitor/android
+            npx cap init SillyTavern com.sillytavern.app --web-dir=public
+            npx cap add android
+          fi
+
+      - name: Bundle backend for mobile
+        run: |
+          echo "Creating mobile backend bundle..."
+          mkdir -p android/app/src/main/assets/nodejs-project
+
+          # Copy backend files
+          cp -r src android/app/src/main/assets/nodejs-project/
+          cp server.js android/app/src/main/assets/nodejs-project/
+          cp package.json android/app/src/main/assets/nodejs-project/
+
+          # Create minimal package.json for mobile
+          cat > android/app/src/main/assets/nodejs-project/package.json << 'EOF'
+          {
+            "name": "sillytavern-mobile-backend",
+            "version": "1.18.0",
+            "type": "module",
+            "main": "server.js",
+            "dependencies": {
+              "express": "^4.21.0",
+              "cors": "^2.8.5",
+              "compression": "^1.8.1",
+              "ws": "^8.18.3"
+            }
+          }
+          EOF
+
+          # Install production dependencies only
+          cd android/app/src/main/assets/nodejs-project
+          npm install --production --no-optional
+          cd -
+
+      - name: Download ML models (optional)
+        if: inputs.bundle_models == 'true'
+        run: |
+          echo "Downloading quantized ML models..."
+          mkdir -p android/app/src/main/assets/models
+          # Add model download logic here if needed
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Decode keystore (release only)
+        if: inputs.build_type == 'release'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
+          fi
+
+      - name: Build APK (Debug)
+        if: inputs.build_type == 'debug'
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Build APK (Release)
+        if: inputs.build_type == 'release'
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Build AAB (Release)
+        if: inputs.build_type == 'release'
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cd android
+          ./gradlew bundleRelease --stacktrace
+
+      - name: Upload Debug APK
+        if: inputs.build_type == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sillytavern-debug-${{ github.run_number }}.apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      - name: Upload Release APK
+        if: inputs.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sillytavern-release-${{ github.run_number }}.apk
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 90
+
+      - name: Upload Release AAB
+        if: inputs.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sillytavern-release-${{ github.run_number }}.aab
+          path: android/app/build/outputs/bundle/release/*.aab
+          retention-days: 90
+
+      - name: Generate build report
+        if: always()
+        run: |
+          echo "# Android Build Report" > build-report.md
+          echo "Build Type: ${{ inputs.build_type }}" >> build-report.md
+          echo "Run Number: ${{ github.run_number }}" >> build-report.md
+          echo "Commit: ${{ github.sha }}" >> build-report.md
+          echo "" >> build-report.md
+
+          if [ -f "android/app/build/outputs/apk/${{ inputs.build_type }}/output-metadata.json" ]; then
+            echo "## Build Metadata" >> build-report.md
+            cat android/app/build/outputs/apk/${{ inputs.build_type }}/output-metadata.json >> build-report.md
+          fi
+
+          echo "" >> build-report.md
+          echo "## APK Size" >> build-report.md
+          find android/app/build/outputs -name "*.apk" -exec ls -lh {} \; >> build-report.md
+
+      - name: Upload build report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-report-${{ github.run_number }}
+          path: build-report.md
+          retention-days: 30
+
+      - name: Comment build status on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('build-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
