@@ -63,6 +63,12 @@ jobs:
           npx cap add android
           npx cap sync android
 
+          # Copy custom Android files from repo
+          mkdir -p android/app/src/main/java/com/sillytavern/app
+          cp android-custom/MainActivity.java android/app/src/main/java/com/sillytavern/app/
+          cp android-custom/NodeJsService.java android/app/src/main/java/com/sillytavern/app/
+          cp android-custom/AndroidManifest.xml android/app/src/main/
+
       - name: Download Node.js binaries for Android
         run: |
           echo "Downloading nodejs-mobile prebuilt binaries..."
