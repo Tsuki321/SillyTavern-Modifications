@@ -147,6 +147,7 @@ jobs:
         if: inputs.build_type == 'debug'
         run: |
           cd android
+          chmod +x gradlew
           ./gradlew assembleDebug --stacktrace
 
       - name: Build APK (Release)
