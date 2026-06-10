@@ -60,6 +60,26 @@ public class NodeJsService extends Service {
         }
     }
 
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "SillyTavern Server",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+    }
+
+    private Notification buildNotification() {
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("SillyTavern")
+            .setContentText("Server starting...")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build();
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;
