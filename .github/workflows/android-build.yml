@@ -218,9 +218,10 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          # 4 GB userdata: the debug APK is ~350 MB and the backend + Node.js
-          # runtime are extracted to internal storage on first launch.
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 4096
+          # NOTE: no custom emulator-options. An earlier `-partition-size 4096`
+          # (meant to fit the ~350 MB APK + first-launch extraction) broke AVD
+          # boot on every API level tried; the default qcow2 userdata image
+          # grows on demand and the runner has ample host disk.
           # Diagnostics-first: every failure emits a ::error:: annotation (visible
           # via the Checks API) and the full trace goes to emulator-trace.txt,
           # which the next step uploads even when this step fails.
