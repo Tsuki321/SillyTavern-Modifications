@@ -11,7 +11,7 @@ describe('Android runtime provisioning script', () => {
         const { stdout } = await execFileAsync('bash', [SCRIPT, '--self-test'], {
             timeout: 120000,
         });
-        expect(stdout).toMatch(/12 passed, 0 failed/);
+        expect(stdout).toMatch(/13 passed, 0 failed/);
         expect(stdout).toMatch(/PASS: ELF validation accepts correct Android runtime/);
         expect(stdout).toMatch(/PASS: ELF validation rejects Linux \(glibc\) binary/);
         expect(stdout).toMatch(/PASS: corrupted \.deb is rejected/);

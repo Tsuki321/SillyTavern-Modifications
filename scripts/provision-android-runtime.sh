@@ -60,7 +60,15 @@ READELF_BIN="${READELF_BIN:-readelf}"
 # NOTE: log goes to stderr. provision_abi's ONLY stdout output is the resolved
 # nodejs version, which main() captures via command substitution.
 log()  { echo "[runtime] $*" >&2; }
-die()  { echo "[runtime] ERROR: $*" >&2; exit 1; }
+die() {
+    echo "[runtime] ERROR: $*" >&2
+    # Also emit a workflow annotation so the failure reason is visible via the
+    # Checks API even when step logs are unavailable.
+    local msg="$*"
+    msg="${msg//%/%25}"
+    echo "::error::$msg" >&2
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # ABI mapping
@@ -162,10 +170,17 @@ extract_deb() { # $1=deb $2=dest-bin-file $3=dest-lib-dir $4=want ("bin"|"lib")
         lib_src="$(find "$work" -type d -name lib -path '*usr/lib' | head -n 1)"
         [ -n "$lib_src" ] || die "usr/lib not found in $deb"
         mkdir -p "$3"
-        # Copy REGULAR files only: APK assets cannot represent symlinks, and
-        # DT_NEEDED entries use SONAMEs which are real files. The validation
-        # step fails loudly if a needed name is ever symlink-only.
+        # Regular files first.
         find "$lib_src" -maxdepth 1 -type f -name '*.so*' -exec cp {} "$3/" \;
+        # SONAME symlinks (libfoo.so.X -> libfoo.so.X.Y.Z) are standard in .debs,
+        # but APK assets cannot hold symlinks: materialize each link's target
+        # content under the link's name (this is the name DT_NEEDED references).
+        local link
+        while IFS= read -r link; do
+            [ -n "$link" ] || continue
+            [ -e "$link" ] || die "Dangling symlink in $deb: $(basename "$link")"
+            cp -L "$link" "$3/"
+        done < <(find "$lib_src" -maxdepth 1 -type l -name '*.so*')
     fi
     trap - RETURN
     rm -rf "$work"
@@ -388,7 +403,9 @@ self_test() {
         else
             mkdir -p "$pkg/data/data/com.termux/files/usr/lib"
             echo "fake-lib" > "$pkg/data/data/com.termux/files/usr/lib/libc++_shared.so"
-            ln -s libc++_shared.so "$pkg/data/data/com.termux/files/usr/lib/libc++_shared.so.link"
+            # SONAME-style layout: versioned real file + symlink under the SONAME.
+            echo "soname-target" > "$pkg/data/data/com.termux/files/usr/lib/libbar.so.1.2.3"
+            ln -s libbar.so.1.2.3 "$pkg/data/data/com.termux/files/usr/lib/libbar.so.1"
         fi
         ( cd "$pkg" && tar -cJf "$d/data.tar.xz" data )
         ( cd "$d" && ar rcs "$1" debian-binary control.tar.gz data.tar.xz )
@@ -421,9 +438,11 @@ self_test() {
         [ -f "$tdir/out/arm64/lib/libc++_shared.so" ] \
             && pass "dep libs staged at out/<abi>/lib" \
             || fail "dep libs staged at out/<abi>/lib"
-        [ ! -e "$tdir/out/arm64/lib/libc++_shared.so.link" ] \
-            && pass "symlinks are not copied into lib dir" \
-            || fail "symlinks are not copied into lib dir"
+        [ -f "$tdir/out/arm64/lib/libbar.so.1" ] \
+            && [ "$(cat "$tdir/out/arm64/lib/libbar.so.1")" = "soname-target" ] \
+            && [ ! -L "$tdir/out/arm64/lib/libbar.so.1" ] \
+            && pass "SONAME symlinks materialized as real files" \
+            || fail "SONAME symlinks materialized as real files"
         grep -q '"nodejs_version": "1.0"' "$tdir/out/runtime-manifest.json" \
             && pass "manifest records nodejs version" \
             || fail "manifest records nodejs version"
@@ -495,6 +514,22 @@ SHIM
     ! abi_info mips >/dev/null 2>&1 \
         && pass "unknown ABI tag rejected" \
         || fail "unknown ABI tag rejected"
+
+    # -- test 6: dangling symlinks in a .deb are rejected, not silently skipped --
+    local dangle="$tdir/dangle-pkg"
+    rm -rf "$dangle" "$tdir/dangle-deb"
+    mkdir -p "$dangle/data/data/com.termux/files/usr/lib" "$tdir/dangle-deb/control"
+    ln -s does-not-exist.so "$dangle/data/data/com.termux/files/usr/lib/libdangle.so.1"
+    echo "2.0" > "$tdir/dangle-deb/debian-binary"
+    echo "Package: fake" > "$tdir/dangle-deb/control/control"
+    ( cd "$dangle" && tar -cJf "$tdir/dangle-deb/data.tar.xz" data )
+    ( cd "$tdir/dangle-deb/control" && tar -czf "$tdir/dangle-deb/control.tar.gz" control )
+    ( cd "$tdir/dangle-deb" && ar rcs "$tdir/dangle.deb" debian-binary control.tar.gz data.tar.xz )
+    if ( extract_deb "$tdir/dangle.deb" "$tdir/dangle-node" "$tdir/dangle-lib" lib ) >/dev/null 2>&1; then
+        fail "dangling symlink in .deb is rejected"
+    else
+        pass "dangling symlink in .deb is rejected"
+    fi
 
     echo "self-test: $passed passed, $failed failed"
     [ "$failed" = "0" ]
