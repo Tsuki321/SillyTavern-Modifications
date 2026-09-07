@@ -1,6 +1,7 @@
 name: Android Build
 
 on:
+  push:
   workflow_dispatch:
     inputs:
       build_type:
@@ -27,6 +28,11 @@ on:
         default: ''
         type: string
 
+# A newer push supersedes an older queued/in-progress build on the same branch.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -35,6 +41,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Resolve build inputs
+        run: |
+          # workflow_dispatch provides inputs; push events do not. Default to a
+          # debug build without emulator tests so every push is validated.
+          echo "BUILD_TYPE=${{ inputs.build_type || 'debug' }}" >> $GITHUB_ENV
+          echo "RUN_EMU=${{ inputs.run_emulator_tests || 'false' }}" >> $GITHUB_ENV
+          echo "NODEJS_PIN=${{ inputs.nodejs_version || '' }}" >> $GITHUB_ENV
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -104,14 +118,14 @@ jobs:
           # Fetch standalone Android (bionic) Node.js + its shared dependencies
           # from Termux's APT repo, verified by SHA-256 and ELF-validated.
           # Debug builds include x64 so the emulator test can boot the server.
-          if [ "${{ inputs.build_type }}" = "debug" ]; then
+          if [ "${{ env.BUILD_TYPE }}" = "debug" ]; then
             ABIS="arm64,armv7,x64"
           else
             ABIS="arm64,armv7"
           fi
           PIN_ARGS=""
-          if [ -n "${{ inputs.nodejs_version }}" ]; then
-            PIN_ARGS="--nodejs-version ${{ inputs.nodejs_version }}"
+          if [ -n "${{ env.NODEJS_PIN }}" ]; then
+            PIN_ARGS="--nodejs-version ${{ env.NODEJS_PIN }}"
           fi
           bash scripts/provision-android-runtime.sh \
             --out android/app/src/main/assets/backend/nodejs \
@@ -134,7 +148,7 @@ jobs:
           echo "=== Node.js runtime ==="
           [ -f "$STAGING/nodejs/runtime-manifest.json" ] && echo "OK runtime-manifest.json" || (echo "MISSING runtime-manifest.json" && exit 1)
           cat "$STAGING/nodejs/runtime-manifest.json"
-          if [ "${{ inputs.build_type }}" = "debug" ]; then
+          if [ "${{ env.BUILD_TYPE }}" = "debug" ]; then
             EXPECTED_ABIS="arm64 armv7 x64"
           else
             EXPECTED_ABIS="arm64 armv7"
@@ -149,19 +163,19 @@ jobs:
           [ -f "android/app/src/main/res/xml/file_paths.xml" ] && echo "OK file_paths.xml" || (echo "MISSING file_paths.xml" && exit 1)
 
       - name: Build APK (Debug)
-        if: inputs.build_type == 'debug'
+        if: env.BUILD_TYPE == 'debug'
         run: |
           cd android
           ./gradlew assembleDebug --stacktrace
 
       - name: Build release artifacts (unsigned)
-        if: inputs.build_type == 'release'
+        if: env.BUILD_TYPE == 'release'
         run: |
           cd android
           ./gradlew assembleRelease bundleRelease --stacktrace
 
       - name: Sign release artifacts
-        if: inputs.build_type == 'release'
+        if: env.BUILD_TYPE == 'release'
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -192,7 +206,7 @@ jobs:
           shred -u /tmp/release.keystore || rm -f /tmp/release.keystore
 
       - name: Run emulator tests
-        if: inputs.run_emulator_tests == 'true'
+        if: env.RUN_EMU == 'true'
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -200,7 +214,7 @@ jobs:
           target: google_apis
           script: |
             echo "Installing APK..."
-            BUILD_TYPE=${{ inputs.build_type }}
+            BUILD_TYPE=${{ env.BUILD_TYPE }}
             APK_PATH=$(ls android/app/build/outputs/apk/${BUILD_TYPE}/*.apk | head -n 1)
             echo "APK: $APK_PATH"
             adb install "$APK_PATH"
@@ -236,14 +250,14 @@ jobs:
             fi
 
       - name: Upload emulator logs
-        if: inputs.run_emulator_tests == 'true'
+        if: env.RUN_EMU == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: emulator-logs-${{ github.run_number }}
           path: emulator-logs.txt
 
       - name: Upload Debug APK
-        if: inputs.build_type == 'debug'
+        if: env.BUILD_TYPE == 'debug'
         uses: actions/upload-artifact@v4
         with:
           name: sillytavern-debug-${{ github.run_number }}.apk
@@ -251,7 +265,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Release APK
-        if: inputs.build_type == 'release'
+        if: env.BUILD_TYPE == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: sillytavern-release-${{ github.run_number }}.apk
@@ -259,7 +273,7 @@ jobs:
           retention-days: 90
 
       - name: Upload Release AAB
-        if: inputs.build_type == 'release'
+        if: env.BUILD_TYPE == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: sillytavern-release-${{ github.run_number }}.aab
@@ -271,7 +285,7 @@ jobs:
         run: |
           {
             echo "# Android Build Report"
-            echo "Build Type: ${{ inputs.build_type }}"
+            echo "Build Type: ${{ env.BUILD_TYPE }}"
             echo "Run Number: ${{ github.run_number }}"
             echo "Commit: ${{ github.sha }}"
             echo ""

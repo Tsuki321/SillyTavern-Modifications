@@ -102,7 +102,8 @@ Build-it-yourself alternative: cross-compile Node with the NDK
 
 ## Building
 
-CI (`Android Build` workflow, manual dispatch):
+CI (`Android Build` workflow — runs on every push, plus manual dispatch for release
+builds and emulator tests):
 
 1. `npm ci`, then Android unit tests (`tests/test:android`).
 2. Regenerates `android/` from scratch (`npx cap add android`), overlays `android-custom/`,
