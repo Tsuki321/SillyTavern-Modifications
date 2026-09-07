@@ -45,9 +45,9 @@
     <link rel="stylesheet" type="text/css" href="css/macros.css">
     <link rel="stylesheet" type="text/css" href="css/user.css">
     <link rel="icon" type="image/x-icon" href="favicon.ico">
-    <!-- Capacitor for mobile app support -->
-    <script type="module" src="capacitor.js"></script>
-    <!-- Mobile bridge for Android app -->
+    <!-- Mobile bridge for the Android app. Must stay a synchronous head script so the
+         boot shell can redirect to the backend before app scripts run. No-op on desktop.
+         (Capacitor injects its own bridge automatically; do NOT add a capacitor.js tag.) -->
     <script src="mobile-bridge.js"></script>
     <!-- Scripts are loaded at the end of the body to improve page load speed -->
 </head>

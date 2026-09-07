@@ -59,3 +59,13 @@ yarn.lock
 *.code-workspace
 test-results/
 CLAUDE.md
+
+# Android (generated / local-only)
+/android/
+*.jks
+*.keystore
+mobile-runtime/
+test-data/
+build-report.md
+emulator-logs.txt
+emulator.log

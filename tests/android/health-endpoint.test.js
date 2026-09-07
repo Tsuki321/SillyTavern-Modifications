@@ -1,4 +1,4 @@
-import { describe, test, expect } from '@jest/globals';
+import { describe, test, expect, beforeEach } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { router } from '../../src/endpoints/health.js';

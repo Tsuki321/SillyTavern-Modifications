@@ -21,25 +21,14 @@ on:
           - 'true'
           - 'false'
 
-      bundle_models:
-        description: 'Bundle ML models in APK'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,6 +38,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Run Android unit tests
+        run: |
+          cd tests
+          npm ci
+          npm run test:android
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -62,102 +57,82 @@ jobs:
           api-level: 34
           build-tools: '34.0.0'
 
-      - name: Install Capacitor CLI
-        run: npm install -g @capacitor/cli
-
-      - name: Setup Capacitor
+      - name: Regenerate Capacitor Android project
         run: |
-          echo "Syncing Capacitor..."
           rm -rf android
           npx cap add android
-          npx cap sync android
 
-          # Copy custom Android files from repo
+          # Overlay our native sources (source of truth: android-custom/)
           mkdir -p android/app/src/main/java/com/sillytavern/app
+          mkdir -p android/app/src/main/res/xml
           cp android-custom/MainActivity.java android/app/src/main/java/com/sillytavern/app/
           cp android-custom/NodeJsService.java android/app/src/main/java/com/sillytavern/app/
           cp android-custom/AndroidManifest.xml android/app/src/main/
+          cp android-custom/file_paths.xml android/app/src/main/res/xml/
 
-      - name: Download Node.js binaries for Android
-        run: |
-          echo "Downloading nodejs-mobile prebuilt binaries..."
-          mkdir -p android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
-
-          wget -q https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v18.20.4/nodejs-mobile-v18.20.4-android.zip -O /tmp/nodejs-mobile.zip
-          unzip -q /tmp/nodejs-mobile.zip -d /tmp/nodejs-mobile
-
-          cp /tmp/nodejs-mobile/bin/arm64-v8a/libnode.so android/app/src/main/jniLibs/arm64-v8a/
-          cp /tmp/nodejs-mobile/bin/armeabi-v7a/libnode.so android/app/src/main/jniLibs/armeabi-v7a/
-          cp /tmp/nodejs-mobile/bin/x86_64/libnode.so android/app/src/main/jniLibs/x86_64/
-
-          ls -lh android/app/src/main/jniLibs/*/
+          npx cap sync android
 
       - name: Bundle backend for mobile
         run: |
           echo "Creating mobile backend bundle..."
-          mkdir -p android/app/src/main/assets/backend
+          STAGING="android/app/src/main/assets/backend"
+          mkdir -p "$STAGING"
 
-          # Copy backend files
-          cp -r src android/app/src/main/assets/backend/
-          cp server.js android/app/src/main/assets/backend/
-          cp -r default android/app/src/main/assets/backend/
+          # Server code, defaults, and the frontend it serves
+          cp server.js "$STAGING/"
+          cp -r src "$STAGING/"
+          cp -r default "$STAGING/"
+          cp -r public "$STAGING/"
 
-          # Create minimal package.json
-          cat > android/app/src/main/assets/backend/package.json << 'EOF'
-          {
-            "name": "sillytavern-mobile",
-            "version": "1.18.0",
-            "type": "module",
-            "main": "server.js",
-            "dependencies": {
-              "express": "^4.21.0",
-              "cors": "^2.8.5",
-              "compression": "^1.8.1",
-              "body-parser": "^1.20.2",
-              "cookie-parser": "^1.4.6",
-              "ws": "^8.18.3",
-              "multer": "^2.1.1",
-              "yaml": "^2.8.3"
-            }
-          }
-          EOF
+          # Real dependency set, resolved from the root lockfile. A hand-written
+          # subset WILL crash on boot (helmet, csrf-sync, ... are all required).
+          cp package.json package-lock.json "$STAGING/"
+          echo "${{ github.sha }}-${{ github.run_number }}" > "$STAGING/VERSION"
 
-          # Install production dependencies
-          cd android/app/src/main/assets/backend
-          npm install --production --no-optional --omit=dev
+          cd "$STAGING"
+          npm ci --omit=dev --no-audit --no-fund
           cd -
 
-      - name: Download ML models (optional)
-        if: inputs.bundle_models == 'true'
+      - name: Provide Node.js runtime
         run: |
-          echo "Downloading quantized ML models..."
-          mkdir -p android/app/src/main/assets/models
-          # Add model download logic here if needed
+          STAGING="android/app/src/main/assets/backend"
+          mkdir -p "$STAGING/nodejs"
 
-      - name: Sync Capacitor
-        run: npx cap sync android
+          # Standalone Android (bionic) Node.js binaries are expected at
+          # mobile-runtime/node-{arm64,armv7,x64,x86} (see ANDROID.md).
+          # Linux musl builds and libnode.so CANNOT be executed by the service.
+          if ls mobile-runtime/node-* >/dev/null 2>&1; then
+            cp mobile-runtime/node-* "$STAGING/nodejs/"
+            echo "Bundled Node.js runtime binaries:"
+            ls -lh "$STAGING/nodejs/"
+          else
+            echo "::warning::No Node.js runtime found in mobile-runtime/. The APK will build,"
+            echo "::warning::but the app will report 'No Node.js runtime bundled' on launch."
+            echo "::warning::See ANDROID.md ('Node.js runtime provisioning') for how to provide one."
+          fi
 
       - name: Verify build assets
         run: |
-          echo "Verifying Node.js binaries..."
-          ls -lh android/app/src/main/assets/nodejs/ || echo "Node.js binaries missing!"
-
-          echo "Verifying backend files..."
-          ls -lh android/app/src/main/assets/backend/ || echo "Backend files missing!"
-
-          echo "Checking backend structure..."
-          [ -f "android/app/src/main/assets/backend/server.js" ] && echo "✓ server.js found" || echo "✗ server.js missing"
-          [ -d "android/app/src/main/assets/backend/src" ] && echo "✓ src/ found" || echo "✗ src/ missing"
-          [ -d "android/app/src/main/assets/backend/node_modules" ] && echo "✓ node_modules found" || echo "✗ node_modules missing"
-
-      - name: Decode keystore (release only)
-        if: inputs.build_type == 'release'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
+          STAGING="android/app/src/main/assets/backend"
+          echo "=== Backend bundle ==="
+          ls -lh "$STAGING" | head -n 20
+          [ -f "$STAGING/server.js" ] && echo "OK server.js" || (echo "MISSING server.js" && exit 1)
+          [ -d "$STAGING/src" ] && echo "OK src/" || (echo "MISSING src/" && exit 1)
+          [ -d "$STAGING/public" ] && echo "OK public/" || (echo "MISSING public/" && exit 1)
+          [ -d "$STAGING/node_modules" ] && echo "OK node_modules/" || (echo "MISSING node_modules/" && exit 1)
+          [ -f "$STAGING/VERSION" ] && echo "OK VERSION: $(cat "$STAGING/VERSION")" || (echo "MISSING VERSION" && exit 1)
+          for dep in helmet csrf-sync cookie-session multer yaml ws; do
+            [ -d "$STAGING/node_modules/$dep" ] && echo "OK dep: $dep" || (echo "MISSING dep: $dep" && exit 1)
+          done
+          echo "=== Node.js runtime ==="
+          if ls "$STAGING/nodejs"/node-* >/dev/null 2>&1; then
+            ls -lh "$STAGING/nodejs/"
+          else
+            echo "NONE (app will fail at runtime with a clear error - see step above)"
           fi
+          echo "=== Native sources ==="
+          [ -f "android/app/src/main/java/com/sillytavern/app/NodeJsService.java" ] && echo "OK NodeJsService.java" || (echo "MISSING NodeJsService.java" && exit 1)
+          [ -f "android/app/src/main/res/xml/file_paths.xml" ] && echo "OK file_paths.xml" || (echo "MISSING file_paths.xml" && exit 1)
 
       - name: Build APK (Debug)
         if: inputs.build_type == 'debug'
@@ -165,45 +140,93 @@ jobs:
           cd android
           ./gradlew assembleDebug --stacktrace
 
-      - name: Build APK (Release)
+      - name: Build release artifacts (unsigned)
+        if: inputs.build_type == 'release'
+        run: |
+          cd android
+          ./gradlew assembleRelease bundleRelease --stacktrace
+
+      - name: Sign release artifacts
         if: inputs.build_type == 'release'
         env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          cd android
-          ./gradlew assembleRelease --stacktrace
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Release signing secrets (ANDROID_KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) are not all set."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)"
+          echo "Using build-tools: $BUILD_TOOLS"
 
-      - name: Build AAB (Release)
-        if: inputs.build_type == 'release'
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          cd android
-          ./gradlew bundleRelease --stacktrace
+          # APKs must be signed with apksigner (v2 scheme); jarsigner would break the signature.
+          "$BUILD_TOOLS/apksigner" sign --ks /tmp/release.keystore \
+            --ks-pass:env KEYSTORE_PASSWORD --key-pass:env KEY_PASSWORD --ks-key-alias "$KEY_ALIAS" \
+            --out android/app/build/outputs/apk/release/app-release-signed.apk \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+          "$BUILD_TOOLS/apksigner" verify --print-certs android/app/build/outputs/apk/release/app-release-signed.apk
 
-      - name: Run Android tests
-        run: |
-          cd android
-          ./gradlew test --stacktrace || echo "Tests completed with warnings"
+          # App bundles are signed with jarsigner.
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore /tmp/release.keystore \
+            -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD" \
+            android/app/build/outputs/bundle/release/app-release.aab "$KEY_ALIAS"
+
+          shred -u /tmp/release.keystore || rm -f /tmp/release.keystore
 
       - name: Run emulator tests
         if: inputs.run_emulator_tests == 'true'
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
-          api-level: 29
+          api-level: 34
           arch: x86_64
           target: google_apis
           script: |
-            adb install android/app/build/outputs/apk/debug/app-debug.apk
+            echo "Installing APK..."
+            BUILD_TYPE=${{ inputs.build_type }}
+            APK_PATH=$(ls android/app/build/outputs/apk/${BUILD_TYPE}/*.apk | head -n 1)
+            echo "APK: $APK_PATH"
+            adb install "$APK_PATH"
+
+            echo "Launching app..."
             adb shell am start -n com.sillytavern.app/.MainActivity
-            sleep 15
-            adb logcat -d | grep -E "(SillyTavern|NodeJs)" > emulator.log || true
-            adb shell "curl -s http://localhost:3000/ || echo 'Server not responding'"
-            cat emulator.log
+
+            echo "Forwarding backend port to the runner..."
+            adb forward tcp:18080 tcp:8000
+
+            echo "Polling backend health (up to 5 minutes)..."
+            HEALTHY=false
+            for i in $(seq 1 60); do
+              if curl -sf --max-time 5 http://127.0.0.1:18080/api/health; then
+                echo ""
+                echo "Backend is healthy."
+                HEALTHY=true
+                break
+              fi
+              sleep 5
+            done
+
+            echo "=== logcat (SillyTavern/NodeJs) ==="
+            adb logcat -d | grep -E "(SillyTavern|NodeJsService)" > emulator-logs.txt || true
+            tail -n 100 emulator-logs.txt || true
+
+            adb shell "pidof com.sillytavern.app" && echo "App process is running" || (echo "App process NOT running" && exit 1)
+
+            if [ "$HEALTHY" != "true" ]; then
+              echo "Backend never became healthy."
+              echo "If the build has no Node.js runtime (see 'Provide Node.js runtime' step), this is expected."
+              exit 1
+            fi
+
+      - name: Upload emulator logs
+        if: inputs.run_emulator_tests == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-logs-${{ github.run_number }}
+          path: emulator-logs.txt
 
       - name: Upload Debug APK
         if: inputs.build_type == 'debug'
@@ -218,7 +241,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sillytavern-release-${{ github.run_number }}.apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/release/*signed*.apk
           retention-days: 90
 
       - name: Upload Release AAB
@@ -232,20 +255,16 @@ jobs:
       - name: Generate build report
         if: always()
         run: |
-          echo "# Android Build Report" > build-report.md
-          echo "Build Type: ${{ inputs.build_type }}" >> build-report.md
-          echo "Run Number: ${{ github.run_number }}" >> build-report.md
-          echo "Commit: ${{ github.sha }}" >> build-report.md
-          echo "" >> build-report.md
-
-          if [ -f "android/app/build/outputs/apk/${{ inputs.build_type }}/output-metadata.json" ]; then
-            echo "## Build Metadata" >> build-report.md
-            cat android/app/build/outputs/apk/${{ inputs.build_type }}/output-metadata.json >> build-report.md
-          fi
-
-          echo "" >> build-report.md
-          echo "## APK Size" >> build-report.md
-          find android/app/build/outputs -name "*.apk" -exec ls -lh {} \; >> build-report.md
+          {
+            echo "# Android Build Report"
+            echo "Build Type: ${{ inputs.build_type }}"
+            echo "Run Number: ${{ github.run_number }}"
+            echo "Commit: ${{ github.sha }}"
+            echo ""
+            echo "## Artifacts"
+            find android/app/build/outputs -name "*.apk" -o -name "*.aab" | while read -r f; do ls -lh "$f"; done
+          } > build-report.md
+          cat build-report.md
 
       - name: Upload build report
         if: always()
@@ -254,17 +273,3 @@ jobs:
           name: build-report-${{ github.run_number }}
           path: build-report.md
           retention-days: 30
-
-      - name: Comment build status on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const report = fs.readFileSync('build-report.md', 'utf8');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: report
-            });

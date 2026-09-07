@@ -7,26 +7,11 @@
     "hostname": "localhost",
     "androidScheme": "http",
     "allowNavigation": [
-      "localhost"
+      "localhost",
+      "127.0.0.1"
     ]
   },
   "android": {
-    "buildOptions": {
-      "keystorePath": "keystore.jks",
-      "keystoreAlias": "sillytavern"
-    },
-    "minWebViewVersion": 55
-  },
-  "plugins": {
-    "SplashScreen": {
-      "launchShowDuration": 3000,
-      "backgroundColor": "#000000",
-      "androidScaleType": "CENTER_CROP",
-      "showSpinner": true,
-      "spinnerColor": "#999999"
-    },
-    "Filesystem": {
-      "androidDisplayName": "Files"
-    }
+    "minWebViewVersion": 100
   }
 }

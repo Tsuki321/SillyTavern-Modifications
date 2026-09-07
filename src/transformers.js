@@ -3,13 +3,39 @@ import fs from 'node:fs';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
-import { pipeline, env, RawImage } from 'sillytavern-transformers';
 import { getConfigValue } from './util.js';
 import { serverDirectory } from './server-directory.js';
 
-configureTransformers();
+// sillytavern-transformers pulls in onnxruntime native code that may not exist for every
+// platform the server runs on (e.g. Android). Import it lazily on first pipeline use so a
+// missing/broken module degrades the ML endpoints instead of killing the whole server boot.
+/** @type {import('sillytavern-transformers')|null} */
+let transformersModule = null;
+let transformersConfigured = false;
 
-function configureTransformers() {
+/**
+ * Loads sillytavern-transformers on first use.
+ * @returns {Promise<import('sillytavern-transformers')>} The transformers module
+ */
+async function getTransformers() {
+    if (!transformersModule) {
+        try {
+            transformersModule = await import('sillytavern-transformers');
+        } catch (error) {
+            throw new Error(`Local ML pipelines are unavailable on this platform: ${error?.message ?? error}`);
+        }
+    }
+    if (!transformersConfigured) {
+        configureTransformers(transformersModule.env);
+        transformersConfigured = true;
+    }
+    return transformersModule;
+}
+
+/**
+ * @param {import('sillytavern-transformers').env} env Transformers environment object
+ */
+function configureTransformers(env) {
     // Limit the number of threads to 1 to avoid issues on Android
     env.backends.onnx.wasm.numThreads = 1;
     // Use WASM from a local folder to avoid CDN connections
@@ -135,6 +161,7 @@ export async function getPipeline(task, forceModel = '') {
     const model = forceModel || getModelForTask(task);
     const localOnly = !getConfigValue('extensions.models.autoDownload', true, 'boolean');
     console.log('Initializing transformers.js pipeline for task', task, 'with model', model);
+    const { pipeline } = await getTransformers();
     const instance = await pipeline(task, model, { cache_dir: cacheDir, quantized: tasks[task].quantized ?? true, local_files_only: localOnly });
     tasks[task].pipeline = instance;
     tasks[task].currentModel = model;

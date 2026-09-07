@@ -10,7 +10,17 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { Tokenizer } from '@agnai/web-tokenizers';
 import { SentencePieceProcessor } from '@agnai/sentencepiece-js';
-import tiktoken from 'tiktoken';
+
+// tiktoken ships Rust native bindings that may not exist for every platform the server runs on
+// (e.g. Android). Load it defensively: a missing/broken module must degrade the tiktoken-backed
+// endpoints, never prevent the whole server from booting.
+/** @type {import('tiktoken')|null} */
+let tiktoken = null;
+try {
+    tiktoken = (await import('tiktoken')).default;
+} catch (error) {
+    console.warn('tiktoken failed to load. Tiktoken-backed token counting will be unavailable:', error?.message ?? error);
+}
 
 import { convertClaudePrompt } from '../prompt-converters.js';
 import { TEXTGEN_TYPES } from '../constants.js';
@@ -530,6 +540,10 @@ export function getTokenizerModel(requestModel) {
 export function getTiktokenTokenizer(model) {
     if (tokenizersCache[model]) {
         return tokenizersCache[model];
+    }
+
+    if (!tiktoken) {
+        throw new Error('tiktoken is not available on this platform');
     }
 
     const tokenizer = tiktoken.encoding_for_model(model);
