@@ -244,6 +244,13 @@ app.use(express.static(path.join(serverDirectory, 'public'), {}));
 // Public API
 app.use('/api/users', usersPublicRouter);
 
+// Lightweight unauthenticated health probe for the Android runtime
+// (NodeJsService startup check) and CI emulator tests. Reports only
+// process liveness — no user data — so it stays outside the login gate.
+app.get('/api/health', (request, response) => {
+    response.send({ status: 'ok', uptime: process.uptime() });
+});
+
 // Everything below this line requires authentication
 app.use(requireLoginMiddleware);
 app.post('/api/ping', (request, response) => {

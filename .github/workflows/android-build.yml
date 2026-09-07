@@ -212,6 +212,9 @@ jobs:
           api-level: 34
           arch: x86_64
           target: google_apis
+          # 4 GB userdata: the debug APK is ~350 MB and the backend + Node.js
+          # runtime are extracted to internal storage on first launch.
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 4096
           script: |
             echo "Installing APK..."
             BUILD_TYPE=${{ env.BUILD_TYPE }}
@@ -245,7 +248,7 @@ jobs:
 
             if [ "$HEALTHY" != "true" ]; then
               echo "Backend never became healthy."
-              echo "If the build has no Node.js runtime (see 'Provide Node.js runtime' step), this is expected."
+              echo "Check the 'Provide Node.js runtime' step and the logcat output above."
               exit 1
             fi
 
