@@ -225,14 +225,10 @@ jobs:
           # Diagnostics-first: every failure emits a ::error:: annotation (visible
           # via the Checks API) and the full trace goes to emulator-trace.txt,
           # which the next step uploads even when this step fails.
-          # TEMP BISECT: 3-line marker script. If the notice annotations below
-          # appear, the script executes and the full test script has the bug;
-          # if exit 2 persists with no notices, the action fails before the
-          # script (infra) and the full script will be restored.
-          script: |
-            echo "::notice::SCRIPT_STARTED_MARKER"
-            adb devices
-            echo "::notice::SCRIPT_FINISHED_MARKER"
+          # Single line on purpose: the action executes EACH line of `script:`
+          # in its own fresh shell (no shared vars/functions/loops), so all
+          # test logic lives in scripts/emulator-boot-test.sh instead.
+          script: bash scripts/emulator-boot-test.sh
 
       - name: Upload emulator trace
         # always(): the trace is most valuable precisely when the test fails.
