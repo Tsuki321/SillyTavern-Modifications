@@ -47,7 +47,9 @@ jobs:
           # workflow_dispatch provides inputs; push events do not. Default to a
           # debug build without emulator tests so every push is validated.
           echo "BUILD_TYPE=${{ inputs.build_type || 'debug' }}" >> $GITHUB_ENV
-          echo "RUN_EMU=${{ inputs.run_emulator_tests || 'false' }}" >> $GITHUB_ENV
+          # TEMP (revert after boot is proven): run the emulator boot test on push
+          # because workflow_dispatch cannot be triggered with the current token.
+          echo "RUN_EMU=${{ inputs.run_emulator_tests || 'true' }}" >> $GITHUB_ENV
           echo "NODEJS_PIN=${{ inputs.nodejs_version || '' }}" >> $GITHUB_ENV
 
       - name: Setup Node.js
