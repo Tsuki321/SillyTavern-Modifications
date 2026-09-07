@@ -221,49 +221,77 @@ jobs:
           # 4 GB userdata: the debug APK is ~350 MB and the backend + Node.js
           # runtime are extracted to internal storage on first launch.
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 4096
+          # Diagnostics-first: every failure emits a ::error:: annotation (visible
+          # via the Checks API) and the full trace goes to emulator-trace.txt,
+          # which the next step uploads even when this step fails.
           script: |
-            echo "Installing APK..."
+            set +e
+            TRACE=emulator-trace.txt
+            : > "$TRACE"
+            FAILED=0
+            note() { echo "$*" | tee -a "$TRACE"; }
+            fail() { echo "::error::$*"; note "FAIL: $*"; FAILED=1; }
+
+            note "=== device sanity ==="
+            adb devices | tee -a "$TRACE"
+            note "boot_completed=$(adb shell getprop sys.boot_completed 2>&1 | tr -d '\r')"
+
+            note "=== install ==="
             BUILD_TYPE=${{ env.BUILD_TYPE }}
-            APK_PATH=$(ls android/app/build/outputs/apk/${BUILD_TYPE}/*.apk | head -n 1)
-            echo "APK: $APK_PATH"
-            adb install "$APK_PATH"
+            APK_PATH=$(ls android/app/build/outputs/apk/${BUILD_TYPE}/*.apk 2>/dev/null | head -n 1)
+            if [ -z "$APK_PATH" ]; then
+              fail "no APK found under android/app/build/outputs/apk/${BUILD_TYPE}/"
+            else
+              note "APK: $APK_PATH ($(du -h "$APK_PATH" | cut -f1))"
+              INSTALL_OUT=$(adb install "$APK_PATH" 2>&1)
+              note "$INSTALL_OUT"
+              echo "$INSTALL_OUT" | grep -q "^Success" || fail "adb install failed: $(echo "$INSTALL_OUT" | tr '\n' ' ' | head -c 500)"
+            fi
+            adb shell pm list packages 2>/dev/null | grep -i silly | tee -a "$TRACE"
 
-            echo "Launching app..."
-            adb shell am start -n com.sillytavern.app/.MainActivity
+            note "=== launch ==="
+            START_OUT=$(adb shell am start -n com.sillytavern.app/.MainActivity 2>&1)
+            note "$START_OUT"
 
-            echo "Forwarding backend port to the runner..."
-            adb forward tcp:18080 tcp:8000
+            note "=== port forward ==="
+            adb forward tcp:18080 tcp:8000 2>&1 | tee -a "$TRACE"
 
-            echo "Polling backend health (up to 5 minutes)..."
+            note "=== health poll (up to 5 minutes) ==="
             HEALTHY=false
             for i in $(seq 1 60); do
-              if curl -sf --max-time 5 http://127.0.0.1:18080/api/health; then
-                echo ""
-                echo "Backend is healthy."
+              BODY=$(curl -sf --max-time 5 http://127.0.0.1:18080/api/health 2>/dev/null)
+              if [ $? -eq 0 ]; then
+                note "attempt $i: $BODY"
                 HEALTHY=true
                 break
               fi
+              [ $((i % 6)) -eq 0 ] && note "attempt $i: not up yet"
               sleep 5
             done
+            [ "$HEALTHY" = "true" ] || fail "backend never healthy after 5 min poll (port forward host:18080 -> emu:8000)"
 
-            echo "=== logcat (SillyTavern/NodeJs) ==="
-            adb logcat -d | grep -E "(SillyTavern|NodeJsService)" > emulator-logs.txt || true
-            tail -n 100 emulator-logs.txt || true
+            note "=== logcat (SillyTavern/NodeJs) ==="
+            adb logcat -d 2>/dev/null | grep -E "(SillyTavern|NodeJsService)" | tail -n 200 | tee -a "$TRACE" | tail -n 20
 
-            adb shell "pidof com.sillytavern.app" && echo "App process is running" || (echo "App process NOT running" && exit 1)
-
-            if [ "$HEALTHY" != "true" ]; then
-              echo "Backend never became healthy."
-              echo "Check the 'Provide Node.js runtime' step and the logcat output above."
-              exit 1
+            note "=== process check ==="
+            PID=$(adb shell "pidof com.sillytavern.app" 2>/dev/null | tr -d '\r')
+            if [ -n "$PID" ]; then
+              note "App process is running (pid $PID)"
+            else
+              fail "app process NOT running"
             fi
 
-      - name: Upload emulator logs
-        if: env.RUN_EMU == 'true'
+            [ "$FAILED" = "0" ] || exit 1
+            note "EMULATOR TEST PASSED"
+
+      - name: Upload emulator trace
+        # always(): the trace is most valuable precisely when the test fails.
+        if: always() && env.RUN_EMU == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: emulator-logs-${{ github.run_number }}
-          path: emulator-logs.txt
+          name: emulator-trace-${{ github.run_number }}
+          path: emulator-trace.txt
+          if-no-files-found: warn
 
       - name: Upload Debug APK
         if: env.BUILD_TYPE == 'debug'
