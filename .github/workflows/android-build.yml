@@ -21,6 +21,12 @@ on:
           - 'true'
           - 'false'
 
+      nodejs_version:
+        description: 'Pin Termux nodejs version (empty = latest from index)'
+        required: false
+        default: ''
+        type: string
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -95,21 +101,22 @@ jobs:
 
       - name: Provide Node.js runtime
         run: |
-          STAGING="android/app/src/main/assets/backend"
-          mkdir -p "$STAGING/nodejs"
-
-          # Standalone Android (bionic) Node.js binaries are expected at
-          # mobile-runtime/node-{arm64,armv7,x64,x86} (see ANDROID.md).
-          # Linux musl builds and libnode.so CANNOT be executed by the service.
-          if ls mobile-runtime/node-* >/dev/null 2>&1; then
-            cp mobile-runtime/node-* "$STAGING/nodejs/"
-            echo "Bundled Node.js runtime binaries:"
-            ls -lh "$STAGING/nodejs/"
+          # Fetch standalone Android (bionic) Node.js + its shared dependencies
+          # from Termux's APT repo, verified by SHA-256 and ELF-validated.
+          # Debug builds include x64 so the emulator test can boot the server.
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            ABIS="arm64,armv7,x64"
           else
-            echo "::warning::No Node.js runtime found in mobile-runtime/. The APK will build,"
-            echo "::warning::but the app will report 'No Node.js runtime bundled' on launch."
-            echo "::warning::See ANDROID.md ('Node.js runtime provisioning') for how to provide one."
+            ABIS="arm64,armv7"
           fi
+          PIN_ARGS=""
+          if [ -n "${{ inputs.nodejs_version }}" ]; then
+            PIN_ARGS="--nodejs-version ${{ inputs.nodejs_version }}"
+          fi
+          bash scripts/provision-android-runtime.sh \
+            --out android/app/src/main/assets/backend/nodejs \
+            --abis "$ABIS" \
+            $PIN_ARGS
 
       - name: Verify build assets
         run: |
@@ -125,11 +132,18 @@ jobs:
             [ -d "$STAGING/node_modules/$dep" ] && echo "OK dep: $dep" || (echo "MISSING dep: $dep" && exit 1)
           done
           echo "=== Node.js runtime ==="
-          if ls "$STAGING/nodejs"/node-* >/dev/null 2>&1; then
-            ls -lh "$STAGING/nodejs/"
+          [ -f "$STAGING/nodejs/runtime-manifest.json" ] && echo "OK runtime-manifest.json" || (echo "MISSING runtime-manifest.json" && exit 1)
+          cat "$STAGING/nodejs/runtime-manifest.json"
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            EXPECTED_ABIS="arm64 armv7 x64"
           else
-            echo "NONE (app will fail at runtime with a clear error - see step above)"
+            EXPECTED_ABIS="arm64 armv7"
           fi
+          for abi in $EXPECTED_ABIS; do
+            [ -f "$STAGING/nodejs/$abi/node" ] && echo "OK runtime: $abi/node" || (echo "MISSING runtime: $abi/node" && exit 1)
+            [ -n "$(ls "$STAGING/nodejs/$abi/lib/"*.so* 2>/dev/null)" ] && echo "OK runtime libs: $abi" || (echo "MISSING runtime libs: $abi" && exit 1)
+          done
+          du -sh "$STAGING/nodejs"
           echo "=== Native sources ==="
           [ -f "android/app/src/main/java/com/sillytavern/app/NodeJsService.java" ] && echo "OK NodeJsService.java" || (echo "MISSING NodeJsService.java" && exit 1)
           [ -f "android/app/src/main/res/xml/file_paths.xml" ] && echo "OK file_paths.xml" || (echo "MISSING file_paths.xml" && exit 1)

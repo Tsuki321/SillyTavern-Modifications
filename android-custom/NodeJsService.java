@@ -13,8 +13,11 @@ import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
+import org.json.JSONObject;
+
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,6 +28,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -35,7 +39,9 @@ import java.util.Map;
  * <ul>
  *   <li>Extract the bundled backend (assets/backend) to internal storage, recursively,
  *       re-extracting whenever the bundled VERSION stamp differs from the installed one.</li>
- *   <li>Launch the bundled Android Node.js runtime against server.js via ProcessBuilder.</li>
+ *   <li>Select the Node.js runtime matching the device ABI
+ *       (backend/nodejs/&lt;arm64|armv7|x64|x86&gt;/{node,lib/}) and launch it against
+ *       server.js via ProcessBuilder, with LD_LIBRARY_PATH pointed at the runtime's lib dir.</li>
  *   <li>Forward the Node process output to logcat and wait until /api/health reports ready.</li>
  *   <li>Shut the Node process down when the service is stopped or the task is removed.</li>
  * </ul>
@@ -126,6 +132,7 @@ public class NodeJsService extends Service {
             Log.i(TAG, "Extracting backend...");
             updateNotification("SillyTavern", "Preparing server files...");
             File backendDir = extractBackend();
+            logRuntimeManifest(backendDir);
 
             Log.i(TAG, "Launching Node.js backend...");
             updateNotification("SillyTavern", "Starting server...");
@@ -200,6 +207,7 @@ public class NodeJsService extends Service {
 
         if (backendDir.exists() && bundledVersion.equals(installedVersion)) {
             Log.d(TAG, "Backend up to date (version " + installedVersion + ")");
+            ensureNodeExecutable(backendDir);
             return backendDir;
         }
 
@@ -209,12 +217,56 @@ public class NodeJsService extends Service {
             throw new IOException("Failed to create backend directory: " + backendDir);
         }
         copyAssetRecursive("backend", backendDir);
-
-        File nodeBinary = findNodeBinary(backendDir, false);
-        if (nodeBinary != null && !nodeBinary.setExecutable(true)) {
-            Log.w(TAG, "Failed to set executable bit on " + nodeBinary);
-        }
+        ensureNodeExecutable(backendDir);
         return backendDir;
+    }
+
+    /** APK assets lose permission bits; restore the executable bit on the node binary. */
+    private void ensureNodeExecutable(File backendDir) {
+        try {
+            File runtimeDir = findRuntimeDir(backendDir, false);
+            if (runtimeDir == null) {
+                return;
+            }
+            File nodeBinary = new File(runtimeDir, "node");
+            if (!nodeBinary.setExecutable(true)) {
+                Log.w(TAG, "Failed to set executable bit on " + nodeBinary);
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "Failed to locate node binary for chmod", e);
+        }
+    }
+
+    /** Best-effort: log which Node.js runtime build is bundled (aids remote debugging). */
+    private void logRuntimeManifest(File backendDir) {
+        File manifest = new File(new File(backendDir, "nodejs"), "runtime-manifest.json");
+        if (!manifest.isFile()) {
+            Log.w(TAG, "No runtime-manifest.json found; runtime provenance unknown");
+            return;
+        }
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(manifest), StandardCharsets.UTF_8))) {
+            StringBuilder body = new StringBuilder();
+            char[] buf = new char[2048];
+            int read;
+            while ((read = reader.read(buf)) != -1 && body.length() < 8192) {
+                body.append(buf, 0, read);
+            }
+            JSONObject json = new JSONObject(body.toString());
+            StringBuilder abis = new StringBuilder();
+            JSONObject abisObj = json.optJSONObject("abis");
+            if (abisObj != null) {
+                Iterator<String> keys = abisObj.keys();
+                while (keys.hasNext()) {
+                    if (abis.length() > 0) abis.append(',');
+                    abis.append(keys.next());
+                }
+            }
+            Log.i(TAG, "Node.js runtime " + json.optString("nodejs_version", "?")
+                + " (bundled ABIs: " + abis + ")");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to parse runtime-manifest.json", e);
+        }
     }
 
     private String readInstalledVersion(File backendDir) {
@@ -223,7 +275,7 @@ public class NodeJsService extends Service {
             return "";
         }
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new java.io.FileInputStream(versionFile), StandardCharsets.UTF_8))) {
+                new InputStreamReader(new FileInputStream(versionFile), StandardCharsets.UTF_8))) {
             String line = reader.readLine();
             return (line != null) ? line.trim() : "";
         } catch (IOException e) {
@@ -291,42 +343,47 @@ public class NodeJsService extends Service {
     // Node.js process management
     // ------------------------------------------------------------------
 
-    /** Maps Android ABIs to the bundled standalone Node.js runtime file names. */
-    private static String abiToNodeBinary(String abi) {
+    /** Maps Android ABIs to the bundled per-ABI runtime directory names. */
+    private static String abiToRuntimeDir(String abi) {
         switch (abi) {
-            case "arm64-v8a": return "node-arm64";
-            case "armeabi-v7a": return "node-armv7";
-            case "x86_64": return "node-x64";
-            case "x86": return "node-x86";
+            case "arm64-v8a": return "arm64";
+            case "armeabi-v7a": return "armv7";
+            case "x86_64": return "x64";
+            case "x86": return "x86";
             default: return null;
         }
     }
 
-    private File findNodeBinary(File backendDir, boolean failIfMissing) throws IOException {
-        File runtimeDir = new File(backendDir, "nodejs");
+    /**
+     * Finds the runtime dir (containing `node` + `lib/`) for this device,
+     * trying Build.SUPPORTED_ABIS in order.
+     */
+    private File findRuntimeDir(File backendDir, boolean failIfMissing) throws IOException {
+        File runtimesRoot = new File(backendDir, "nodejs");
         List<String> abis = new ArrayList<>();
         if (Build.SUPPORTED_ABIS != null) {
             abis.addAll(Arrays.asList(Build.SUPPORTED_ABIS));
         }
         for (String abi : abis) {
-            String name = abiToNodeBinary(abi);
+            String name = abiToRuntimeDir(abi);
             if (name == null) continue;
-            File candidate = new File(runtimeDir, name);
+            File candidate = new File(new File(runtimesRoot, name), "node");
             if (candidate.isFile()) {
                 Log.i(TAG, "Using Node.js runtime " + name + " for ABI " + abi);
-                return candidate;
+                return candidate.getParentFile();
             }
         }
         if (failIfMissing) {
             throw new IOException(
                 "No Node.js runtime bundled for this device (ABIs: " + abis + "). "
-                + "Expected one of backend/nodejs/node-{arm64,armv7,x64,x86}. See ANDROID.md.");
+                + "Expected backend/nodejs/<arm64|armv7|x64|x86>/node. See ANDROID.md.");
         }
         return null;
     }
 
     private void launchNode(File backendDir) throws IOException {
-        File nodeBinary = findNodeBinary(backendDir, true);
+        File runtimeDir = findRuntimeDir(backendDir, true);
+        File nodeBinary = new File(runtimeDir, "node");
         File serverJs = new File(backendDir, "server.js");
         if (!serverJs.isFile()) {
             throw new IOException("Bundled backend is missing server.js: " + serverJs);
@@ -358,6 +415,9 @@ public class NodeJsService extends Service {
         env.put("HOME", getFilesDir().getAbsolutePath());
         env.put("TMPDIR", getCacheDir().getAbsolutePath());
         env.put("ANDROID_DATA_DIR", dataRoot.getAbsolutePath());
+        // The runtime's shared dependencies (libc++, OpenSSL, ICU, ...) live next
+        // to it; the bionic linker honors LD_LIBRARY_PATH for our child process.
+        env.put("LD_LIBRARY_PATH", new File(runtimeDir, "lib").getAbsolutePath());
         // No git binary exists on-device; never attempt extension auto-updates.
         env.put("SILLYTAVERN_EXTENSIONS_AUTOUPDATE", "false");
 

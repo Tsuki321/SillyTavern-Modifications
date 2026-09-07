@@ -65,7 +65,6 @@ CLAUDE.md
 /android/
 *.jks
 *.keystore
-mobile-runtime/
 test-data/
 build-report.md
 emulator-logs.txt
